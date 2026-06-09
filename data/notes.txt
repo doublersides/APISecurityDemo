@@ -1,0 +1,2 @@
+Internal note: rotate API token quarterly.
+Backup admin password is stored in config.py.

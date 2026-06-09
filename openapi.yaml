@@ -1,0 +1,759 @@
+openapi: 3.0.3
+info:
+  title: Vulnerable API Demo
+  description: |
+    Intentionally insecure Flask API for security training and scanner evaluation.
+
+    **Warning:** This application must not be deployed to production. Endpoints
+    demonstrate common API security flaws including SQL injection, IDOR, SSRF,
+    command injection, broken access control, and information disclosure.
+  version: 1.0.0
+  contact:
+    name: API Security Demo
+
+servers:
+  - url: http://127.0.0.1:5050
+    description: Local development server (default PORT=5050)
+
+tags:
+  - name: Meta
+    description: Service metadata
+  - name: Authentication
+    description: Login and session handling
+  - name: Users
+    description: User management
+  - name: Search
+    description: User search
+  - name: Profile
+    description: User profile access
+  - name: Network
+    description: Outbound network operations
+  - name: Files
+    description: File access
+  - name: System
+    description: Command execution and admin utilities
+  - name: Debug
+    description: Diagnostics and unsafe output
+
+paths:
+  /:
+    get:
+      tags: [Meta]
+      summary: List available API endpoints
+      operationId: getIndex
+      responses:
+        "200":
+          description: Service metadata and endpoint catalog
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IndexResponse"
+              example:
+                name: Vulnerable API Demo
+                warning: This application is intentionally insecure.
+                endpoints:
+                  - POST /api/login
+                  - GET /api/users
+
+  /api/login:
+    post:
+      tags: [Authentication]
+      summary: Authenticate a user
+      description: |
+        Vulnerable to SQL injection via unsanitized username/password fields.
+        Returns API token and session secret on success.
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+            examples:
+              valid:
+                summary: Valid credentials
+                value:
+                  username: alice
+                  password: password123
+              sqliBypass:
+                summary: SQL injection bypass example
+                value:
+                  username: "admin'--"
+                  password: x
+      responses:
+        "200":
+          description: Authentication succeeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginSuccessResponse"
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginFailureResponse"
+        "500":
+          description: SQL error with query disclosure
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SqlErrorResponse"
+
+  /api/users:
+    get:
+      tags: [Users]
+      summary: List all users
+      description: |
+        Broken access control. No authentication required. Returns passwords
+        and SSNs for every user.
+      operationId: listUsers
+      responses:
+        "200":
+          description: Full user list including sensitive fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserListResponse"
+
+    post:
+      tags: [Users]
+      summary: Create a user
+      description: |
+        Mass assignment vulnerability. Caller can set privileged fields such
+        as `role` and `ssn`.
+      operationId: createUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateUserRequest"
+            example:
+              username: eve
+              password: secret
+              email: eve@example.com
+              role: admin
+              ssn: 333-44-5555
+      responses:
+        "201":
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateUserResponse"
+        "400":
+          description: Missing required fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/users/{userId}:
+    parameters:
+      - $ref: "#/components/parameters/UserId"
+
+    get:
+      tags: [Users]
+      summary: Get user by ID
+      description: |
+        Insecure Direct Object Reference (IDOR). Any caller can retrieve any
+        user record by numeric ID without authorization.
+      operationId: getUserById
+      responses:
+        "200":
+          description: User record including sensitive fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "404":
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    delete:
+      tags: [Users]
+      summary: Delete user by ID
+      description: Missing authorization. Any caller can delete any user.
+      operationId: deleteUserById
+      responses:
+        "200":
+          description: User deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteUserResponse"
+        "404":
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/search:
+    get:
+      tags: [Search]
+      summary: Search users by username
+      description: SQL injection via the `q` query parameter.
+      operationId: searchUsers
+      parameters:
+        - name: q
+          in: query
+          description: Username search term
+          required: false
+          schema:
+            type: string
+            default: ""
+          example: ali
+      responses:
+        "200":
+          description: Matching users
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResponse"
+        "500":
+          description: SQL error with query disclosure
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SqlErrorResponse"
+
+  /api/profile:
+    get:
+      tags: [Profile]
+      summary: Get profile for a user
+      description: |
+        Broken authentication. Trusts the client-supplied `X-User-Id` header
+        without validating a session or token.
+      operationId: getProfile
+      parameters:
+        - $ref: "#/components/parameters/XUserId"
+      responses:
+        "200":
+          description: User profile including sensitive fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          description: Missing X-User-Id header
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/fetch:
+    post:
+      tags: [Network]
+      summary: Fetch a remote URL
+      description: |
+        Server-Side Request Forgery (SSRF). The server performs an outbound HTTP
+        GET to any URL supplied by the caller.
+      operationId: fetchUrl
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FetchRequest"
+            examples:
+              public:
+                summary: Fetch a public URL
+                value:
+                  url: https://example.com
+              metadata:
+                summary: Cloud metadata endpoint example
+                value:
+                  url: http://169.254.169.254/latest/meta-data/
+      responses:
+        "200":
+          description: Remote response body and headers
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FetchResponse"
+        "400":
+          description: Missing url field
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: Remote request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/files:
+    get:
+      tags: [Files]
+      summary: Read a file from the data directory
+      description: |
+        Path traversal vulnerability. The `path` query parameter is joined to
+        the data directory without normalization or sandboxing.
+      operationId: readFile
+      parameters:
+        - name: path
+          in: query
+          description: Relative file path under the data directory
+          required: false
+          schema:
+            type: string
+            default: notes.txt
+          examples:
+            default:
+              summary: Default notes file
+              value: notes.txt
+            traversal:
+              summary: Path traversal example
+              value: ../app.py
+      responses:
+        "200":
+          description: File contents
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileReadResponse"
+        "404":
+          description: File not found or unreadable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileReadErrorResponse"
+
+  /api/exec:
+    post:
+      tags: [System]
+      summary: Ping a hostname
+      description: |
+        Command injection. User-supplied `hostname` is interpolated into a shell
+        command executed with `shell=True`.
+      operationId: execCommand
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExecRequest"
+            examples:
+              localhost:
+                summary: Ping localhost
+                value:
+                  hostname: localhost
+              injection:
+                summary: Command injection example
+                value:
+                  hostname: "127.0.0.1; id"
+      responses:
+        "200":
+          description: Command output
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecResponse"
+
+  /api/admin:
+    get:
+      tags: [System]
+      summary: Access admin panel
+      description: |
+        Broken access control with weak token validation. Accepts either the API
+        token or the hardcoded admin password via query string.
+      operationId: getAdminPanel
+      parameters:
+        - name: token
+          in: query
+          required: true
+          description: API token or admin password
+          schema:
+            type: string
+          example: demo-token-abc123
+      responses:
+        "200":
+          description: Admin secrets and environment variables
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminResponse"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/debug:
+    get:
+      tags: [Debug]
+      summary: Expose debug and configuration data
+      description: Information disclosure without authentication.
+      operationId: getDebugInfo
+      responses:
+        "200":
+          description: Debug configuration and request metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DebugResponse"
+
+  /api/echo:
+    get:
+      tags: [Debug]
+      summary: Echo a message
+      description: |
+        Returns unescaped user input in JSON and HTML fields, enabling reflected
+        output injection in consuming clients.
+      operationId: echoMessage
+      parameters:
+        - name: message
+          in: query
+          required: false
+          description: Message to echo back to the caller
+          schema:
+            type: string
+            default: ""
+          example: "<script>alert(1)</script>"
+      responses:
+        "200":
+          description: Echoed message
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EchoResponse"
+
+components:
+  parameters:
+    UserId:
+      name: userId
+      in: path
+      required: true
+      description: Numeric user identifier
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+      example: 1
+
+    XUserId:
+      name: X-User-Id
+      in: header
+      required: true
+      description: Client-supplied user identifier trusted without validation
+      schema:
+        type: string
+      example: "1"
+
+  schemas:
+    IndexResponse:
+      type: object
+      required: [name, warning, endpoints]
+      properties:
+        name:
+          type: string
+        warning:
+          type: string
+        endpoints:
+          type: array
+          items:
+            type: string
+
+    LoginRequest:
+      type: object
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+      example:
+        username: alice
+        password: password123
+
+    PublicUser:
+      type: object
+      required: [id, username, role, email]
+      properties:
+        id:
+          type: integer
+          format: int64
+        username:
+          type: string
+        role:
+          type: string
+          enum: [user, admin]
+        email:
+          type: string
+          format: email
+
+    User:
+      allOf:
+        - $ref: "#/components/schemas/PublicUser"
+        - type: object
+          required: [password, ssn]
+          properties:
+            password:
+              type: string
+            ssn:
+              type: string
+              example: 111-22-3333
+
+    LoginSuccessResponse:
+      type: object
+      required: [success, user, token, session_secret]
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        user:
+          $ref: "#/components/schemas/PublicUser"
+        token:
+          type: string
+        session_secret:
+          type: string
+
+    LoginFailureResponse:
+      type: object
+      required: [success, message]
+      properties:
+        success:
+          type: boolean
+          enum: [false]
+        message:
+          type: string
+
+    UserListResponse:
+      type: object
+      required: [users]
+      properties:
+        users:
+          type: array
+          items:
+            $ref: "#/components/schemas/User"
+
+    CreateUserRequest:
+      type: object
+      required: [username]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+          default: changeme
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+          default: user
+        ssn:
+          type: string
+
+    CreateUserResponse:
+      type: object
+      required: [id, username, role]
+      properties:
+        id:
+          type: integer
+          format: int64
+        username:
+          type: string
+        role:
+          type: string
+
+    DeleteUserResponse:
+      type: object
+      required: [deleted]
+      properties:
+        deleted:
+          type: integer
+          format: int64
+
+    SearchResult:
+      type: object
+      required: [id, username, email, role]
+      properties:
+        id:
+          type: integer
+          format: int64
+        username:
+          type: string
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+
+    SearchResponse:
+      type: object
+      required: [results, query]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/SearchResult"
+        query:
+          type: string
+
+    FetchRequest:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+          format: uri
+      example:
+        url: https://example.com
+
+    FetchResponse:
+      type: object
+      required: [url, status_code, headers, body]
+      properties:
+        url:
+          type: string
+          format: uri
+        status_code:
+          type: integer
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+        body:
+          type: string
+
+    FileReadResponse:
+      type: object
+      required: [path, content]
+      properties:
+        path:
+          type: string
+        content:
+          type: string
+
+    FileReadErrorResponse:
+      type: object
+      required: [error, attempted_path]
+      properties:
+        error:
+          type: string
+        attempted_path:
+          type: string
+
+    ExecRequest:
+      type: object
+      properties:
+        hostname:
+          type: string
+          default: localhost
+
+    ExecResponse:
+      type: object
+      required: [command, stdout, stderr, returncode]
+      properties:
+        command:
+          type: string
+        stdout:
+          type: string
+        stderr:
+          type: string
+        returncode:
+          type: integer
+
+    AdminSecrets:
+      type: object
+      required: [secret_key, admin_password, api_token]
+      properties:
+        secret_key:
+          type: string
+        admin_password:
+          type: string
+        api_token:
+          type: string
+
+    AdminResponse:
+      type: object
+      required: [admin, secrets, environment]
+      properties:
+        admin:
+          type: boolean
+          enum: [true]
+        secrets:
+          $ref: "#/components/schemas/AdminSecrets"
+        environment:
+          type: object
+          additionalProperties:
+            type: string
+
+    DebugResponse:
+      type: object
+      required: [debug, config, request_headers, server_env]
+      properties:
+        debug:
+          type: boolean
+        config:
+          type: object
+          additionalProperties: true
+        request_headers:
+          type: object
+          additionalProperties:
+            type: string
+        server_env:
+          type: object
+          additionalProperties:
+            type: string
+
+    EchoResponse:
+      type: object
+      required: [echo, html]
+      properties:
+        echo:
+          type: string
+        html:
+          type: string
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    SqlErrorResponse:
+      type: object
+      required: [error, query]
+      properties:
+        error:
+          type: string
+        query:
+          type: string
+
+    VerboseErrorResponse:
+      type: object
+      required: [error, type, path, method, args, headers]
+      properties:
+        error:
+          type: string
+        type:
+          type: string
+        path:
+          type: string
+        method:
+          type: string
+        args:
+          type: object
+          additionalProperties: true
+        json:
+          nullable: true
+        headers:
+          type: object
+          additionalProperties:
+            type: string
